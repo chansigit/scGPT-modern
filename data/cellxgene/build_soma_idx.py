@@ -10,6 +10,8 @@ parser = argparse.ArgumentParser(
                     description='Build soma index list based on query')
 
 
+
+VERSION='2023-05-15'
 parser.add_argument("--query-name",
     type=str,
     required=True,
