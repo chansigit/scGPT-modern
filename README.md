@@ -73,6 +73,12 @@ tutorials.
 
 ## Quick start
 
+> See [`docs/scGPT-modern-env-tutorial.md`](docs/scGPT-modern-env-tutorial.md)
+> for the full setup guide: prerequisites, cluster pollution pitfalls, FA3
+> build from source with trimmed scope, the compat shim architecture deep-dive,
+> MC-TTA for stable benchmarks, per-GPU backend matrix, and a troubleshooting
+> section for the failure modes we actually hit.
+
 ```bash
 # 1. Create a Python 3.12 env (micromamba / conda / venv — your pick)
 micromamba create -p /path/to/env -c conda-forge -y python=3.12 pip
