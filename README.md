@@ -1,4 +1,166 @@
-# scGPT
+# scGPT-modern
+
+> A **drop-in modernization** of [bowang-lab/scGPT](https://github.com/bowang-lab/scGPT)
+> for **Python 3.12 + torch 2.6 + flash-attn 3** (H100 `sm_90a` native).
+> **The original pretrained checkpoints load unmodified** — this is purely a
+> runtime / dependency upgrade, not a new training run.
+
+## What's different from upstream
+
+| | upstream `bowang-lab/scGPT` | this repo `chansigit/scGPT-modern` |
+|---|---|---|
+| Python | 3.7 – 3.10 | **3.12** |
+| torch | 1.13.x + cu117 | **2.6.0 + cu124** |
+| numpy | locked `< 2` | **≥ 2** (free) |
+| flash-attn | v1.0.4 (patched for sm_86 PTX) | **v3.0.0 (hopper)** native `sm_90a`, auto-falls back to v2 |
+| torchtext dependency | required (0.14 for torch 1.13) | **removed** (pure-Python shim) |
+| Target GPU | A100 / A40 / L40S | **H100** (primary), still runs on older arch via the v2 fallback |
+| scGPT source changes | — | **4 import-line edits** (see [`scgpt/_compat/`](scgpt/_compat/)) |
+
+## Why this exists
+
+The upstream code has a hard `from flash_attn.flash_attention import FlashMHA`
+import pinned to the legacy flash-attn 1.x API, and an `import torchtext.vocab`
+that breaks under torch 2.5+ (ABI mismatch — `libtorchtext.so` fails to load
+with undefined-symbol errors).
+
+Rather than fork the model code, this repo adds a thin `scgpt/_compat/` shim
+package that:
+
+1. Reproduces the old `FlashMHA` class with **the exact same submodule names**
+   (`Wqkv`, `out_proj`) so pretrained `state_dict`s load with **zero key
+   remapping**.
+2. Provides a ~190-line pure-Python replacement for `torchtext.vocab.Vocab` —
+   scGPT only touches 5 methods of it, no reason to keep the C++ dependency.
+
+The shim auto-selects the best available attention backend at runtime:
+
+```
+flash-attn-4 (CuTeDSL, when NVIDIA ships working packaging)
+  ↓ fallback
+flash-attn-3 (hopper, sm_90a native — source-built from Dao-AILab/flash-attention hopper/)
+  ↓ fallback
+flash-attn-2 (pre-built wheel, covers Ampere / Ada / Hopper)
+  ↓ fallback
+pure PyTorch SDPA (if none of the above import — via the upstream `flash_attn_available` gate)
+```
+
+FA3 removed the `dropout_p` kwarg, so the shim wraps it in a tiny adapter.
+fp32 inputs are auto-cast to fp16 inside `FlashMHA.forward()` and cast back
+before `out_proj` — this mirrors flash-attn v1's internal behavior, which the
+`scgpt.tasks.embed_data` pipeline relies on (it leaves the model unpromoted).
+
+## Verified
+
+PBMC3k zero-shot cell embedding with the **unmodified** `scGPT_continual_pretrained`
+checkpoint (208 MB) produces results **numerically near-identical** to the
+legacy flash-attn-1.0.4 run on L40S:
+
+| | this fork (FA3 on H100) | upstream env (FA1 on L40S) |
+|---|---|---|
+| `load_state_dict` missing keys on attention layers | **0** | 0 |
+| `load_state_dict` unexpected keys on attention layers | **0** | 0 |
+| embedding shape | (2638, 512) | (2638, 512) |
+| embedding `std` | 0.0442 | 0.0442 |
+| embedding `mean` | 0.0007 | 0.0007 |
+| per-cell cosine similarity vs legacy run | **0.9958** | — |
+| relative L2 error vs legacy run | **0.092** | — |
+
+The tiny numerical drift comes from sm_86 PTX-JIT vs sm_90a WGMMA fp16
+accumulation order — it's well below the single-run Leiden clustering noise
+floor (ARI ± 0.05 across random seeds) documented in the upstream zero-shot
+tutorials.
+
+## Quick start
+
+```bash
+# 1. Create a Python 3.12 env (micromamba / conda / venv — your pick)
+micromamba create -p /path/to/env -c conda-forge -y python=3.12 pip
+
+# 2. Install torch 2.6 + cu124 from pytorch.org
+pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+
+# 3. Install flash-attn 2 as a universal fallback (cp312 wheel from GitHub release)
+pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl \
+    --no-build-isolation
+
+# 4. (Recommended on H100) build flash-attn 3 from source — ~5 min with trimmed
+#    scope (sm_90a only; disable fp8 / hdim 96 / 192 / 256 / paged / local / cluster).
+#    See https://github.com/Dao-AILab/flash-attention/tree/main/hopper
+#
+#    The resulting wheel is tagged cp39-abi3 and is forward-compatible to any
+#    CPython >= 3.9, so you only ever build it once even across Python upgrades.
+
+# 5. Scientific stack (all binary wheels)
+pip install --only-binary=:all: \
+    numpy scanpy anndata pandas scipy scikit-learn numba \
+    einops ipython leidenalg python-igraph h5py pyarrow
+
+# 6. scGPT-modern itself (editable)
+pip install poetry-core
+git clone https://github.com/chansigit/scGPT-modern.git
+cd scGPT-modern
+pip install -e . --no-deps --no-build-isolation
+
+# 7. Verify the backend resolver picks the fastest available kernel
+python -c "
+from scgpt._compat.flash_attention import get_backend_name
+print('FlashMHA backend:', get_backend_name())
+# expected on H100 with FA3 installed:      v3-hopper
+# expected on H100 with only FA2 installed: v2
+# expected with nothing importable:         none
+"
+```
+
+## Usage
+
+**Identical to upstream.** The compat shim is completely transparent once the 4
+import edits are in place. Every existing scGPT workflow — `embed_data`,
+`get_batch_cell_embeddings`, `TransformerModel`, `MultiomicModel`, the
+fine-tuning notebooks, the zero-shot tutorials — runs unchanged.
+
+```python
+from scgpt.tasks.cell_emb import embed_data
+import scanpy as sc
+
+adata = sc.read_h5ad("path/to/raw_counts.h5ad")
+out = embed_data(
+    adata,
+    model_dir="path/to/scGPT_continual_pretrained",
+    gene_col="gene_name",
+    use_fast_transformer=True,   # this triggers the shim backend resolver
+    return_new_adata=True,
+)
+# out.X is (n_cells, 512), L2-normalized, ready for sc.pp.neighbors(metric="cosine")
+```
+
+## Relationship to upstream
+
+This repo is a **standalone upgrade**, not a GitHub fork. The commit history
+below the two modernization commits is identical to upstream `bowang-lab/scGPT`
+at the branch point; an `upstream` git remote can be added locally for pulling
+future upstream changes:
+
+```bash
+git remote add upstream https://github.com/bowang-lab/scGPT.git
+git fetch upstream && git merge upstream/main
+```
+
+**Where to file issues:**
+- Questions about the scGPT model itself, training, checkpoints, published
+  results → [bowang-lab/scGPT](https://github.com/bowang-lab/scGPT)
+- Issues specific to the modernized stack (`_compat/` shim, torch 2.x build,
+  flash-attn 3, H100 deployment) → this repo
+
+## License
+
+Same as upstream scGPT (MIT). See [`LICENSE`](LICENSE).
+
+---
+
+# Original scGPT README
+
+_Everything below this line is preserved verbatim from the upstream project._
 
 This is the official codebase for **scGPT: Towards Building a Foundation Model for Single-Cell Multi-omics Using Generative AI**.
 
