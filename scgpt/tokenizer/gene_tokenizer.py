@@ -8,8 +8,11 @@ from typing_extensions import Self
 import numpy as np
 import pandas as pd
 import torch
-import torchtext.vocab as torch_vocab
-from torchtext.vocab import Vocab
+# torchtext has been deprecated (ABI-incompatible with torch 2.5+). We ship a
+# minimal pure-Python replacement under scgpt._compat that mirrors the handful
+# of methods scGPT actually uses.
+from scgpt._compat import torchtext_vocab as torch_vocab
+from scgpt._compat.torchtext_vocab import Vocab
 
 # from transformers.tokenization_utils import PreTrainedTokenizer
 # from transformers import AutoTokenizer, BertTokenizer

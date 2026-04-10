@@ -12,7 +12,9 @@ from torch.distributions import Bernoulli
 from tqdm import trange
 
 try:
-    from flash_attn.flash_attention import FlashMHA
+    # Upstream import (flash-attn v1.x) no longer exists in v2+/v4. We ship a
+    # compatibility shim with the same FlashMHA API under scgpt._compat.
+    from scgpt._compat.flash_attention import FlashMHA
 except ImportError:
     import warnings
 
