@@ -274,7 +274,7 @@ def embed_data(
 
     if return_new_adata:
         obs_df = adata.obs[obs_to_save] if obs_to_save is not None else None
-        return sc.AnnData(X=cell_embeddings, obs=obs_df, dtype="float32")
+        return sc.AnnData(X=cell_embeddings.astype("float32"), obs=obs_df)
 
     adata.obsm["X_scGPT"] = cell_embeddings
     return adata
